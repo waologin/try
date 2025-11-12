@@ -1,1 +1,202 @@
+<!-- index.html - 簡易購読情報取得ページ（Service Worker と Push Subscription）
+説明:
+  - サービスワーカー登録
+  - プッシュ通知の購読（VAPID公開鍵を applicationServerKey として使用）
+  - 取得した購読情報（endpoint / keys.p256dh / keys.auth）を画面表示し、コピーできる
+  - サーバーへ送信するサンプル（fetch）もコメントで示す
+
+使い方:
+ 1) VAPID_PUBLIC_KEY をご自身のbase64url形式の公開鍵に置き換えてください（例: BNc...）
+ 2) このファイルを HTTPS 上で配信するか、ローカルでテストするなら `localhost` で HTTPS が必要です。
+ 3) サービスワーカーは sw.js として同じオリジンに置いてください。
+-->
+
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Push購読デモ</title>
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif; padding: 24px; }
+    button { padding: 8px 12px; margin-right:8px; }
+    pre { background:#f6f8fa; padding:12px; border-radius:6px; overflow:auto; }
+    .row { margin-bottom:12px; }
+  </style>
+</head>
+<body>
+  <h1>Push 購読（Subscription）取得デモ</h1>
+
+  <div class="row">
+    <button id="btnRegister">サービスワーカー登録</button>
+    <button id="btnSubscribe" disabled>購読する (Subscribe)</button>
+    <button id="btnUnsubscribe" disabled>購読解除 (Unsubscribe)</button>
+  </div>
+
+  <div class="row">
+    <label>VAPID 公開鍵（base64url）</label><br/>
+    <input id="vapidInput" style="width:100%" value="REPLACE_WITH_YOUR_VAPID_PUBLIC_KEY_BASE64URL" />
+  </div>
+
+  <div class="row">
+    <strong>取得した購読情報（コピー可）</strong>
+    <pre id="subJson">まだ購読されていません</pre>
+    <button id="btnCopy" disabled>コピー</button>
+  </div>
+
+  <script>
+    // ------------------------
+    // ユーティリティ: base64url -> Uint8Array
+    // ------------------------
+    function base64UrlToUint8Array(base64UrlString) {
+      // base64url -> base64
+      const padding = '='.repeat((4 - base64UrlString.length % 4) % 4);
+      const base64 = (base64UrlString + padding).replace(/-/g, '+').replace(/_/g, '/');
+      const raw = atob(base64);
+      const out = new Uint8Array(raw.length);
+      for (let i = 0; i < raw.length; ++i) {
+        out[i] = raw.charCodeAt(i);
+      }
+      return out;
+    }
+
+    // ------------------------
+    // DOM
+    // ------------------------
+    const btnRegister = document.getElementById('btnRegister');
+    const btnSubscribe = document.getElementById('btnSubscribe');
+    const btnUnsubscribe = document.getElementById('btnUnsubscribe');
+    const subJson = document.getElementById('subJson');
+    const btnCopy = document.getElementById('btnCopy');
+    const vapidInput = document.getElementById('vapidInput');
+
+    let registration = null;
+
+    // ------------------------
+    // サービスワーカー登録
+    // ------------------------
+    btnRegister.addEventListener('click', async () => {
+      if (!('serviceWorker' in navigator)) {
+        alert('Service Worker 非対応のブラウザです');
+        return;
+      }
+      try {
+        registration = await navigator.serviceWorker.register('/sw.js');
+        console.log('SW registered:', registration);
+        alert('ServiceWorker 登録完了');
+        btnSubscribe.disabled = false;
+        btnRegister.disabled = true;
+        // 既にsubscriptionがあるか確認
+        const existing = await registration.pushManager.getSubscription();
+        if (existing) {
+          showSubscription(existing);
+          btnUnsubscribe.disabled = false;
+        }
+      } catch (e) {
+        console.error('sw register failed', e);
+        alert('ServiceWorker 登録失敗: ' + e.message);
+      }
+    });
+
+    // ------------------------
+    // Subscribe
+    // ------------------------
+    btnSubscribe.addEventListener('click', async () => {
+      if (!registration) {
+        alert('先にServiceWorkerを登録してください');
+        return;
+      }
+      const vapidKey = vapidInput.value.trim();
+      if (!vapidKey || vapidKey.includes('REPLACE_WITH')) {
+        alert('VAPID公開鍵を入力してください（base64url形式）');
+        return;
+      }
+
+      try {
+        const sub = await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: base64UrlToUint8Array(vapidKey)
+        });
+        showSubscription(sub);
+        btnUnsubscribe.disabled = false;
+        btnCopy.disabled = false;
+        alert('購読完了');
+      } catch (e) {
+        console.error('subscribe failed', e);
+        alert('購読失敗: ' + e.message);
+      }
+    });
+
+    // ------------------------
+    // Unsubscribe
+    // ------------------------
+    btnUnsubscribe.addEventListener('click', async () => {
+      if (!registration) return;
+      try {
+        const sub = await registration.pushManager.getSubscription();
+        if (sub) {
+          await sub.unsubscribe();
+          subJson.textContent = '購読解除されました';
+          btnUnsubscribe.disabled = true;
+          btnCopy.disabled = true;
+        } else {
+          alert('購読が見つかりません');
+        }
+      } catch (e) {
+        console.error('unsubscribe failed', e);
+        alert('購読解除失敗: ' + e.message);
+      }
+    });
+
+    // ------------------------
+    // 表示 / コピー
+    // ------------------------
+    function showSubscription(sub) {
+      // sub.toJSON() は endpoint と keys を含む
+      const obj = sub.toJSON();
+      subJson.textContent = JSON.stringify(obj, null, 2);
+    }
+
+    btnCopy.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(subJson.textContent);
+        alert('コピーしました');
+      } catch (e) {
+        console.error('copy failed', e);
+        alert('コピーに失敗しました');
+      }
+    });
+
+    // ------------------------
+    // ページロード時に既存登録をチェック（自動）
+    // ------------------------
+    window.addEventListener('load', async () => {
+      if ('serviceWorker' in navigator) {
+        try {
+          const reg = await navigator.serviceWorker.getRegistration();
+          if (reg) {
+            registration = reg;
+            btnRegister.disabled = true;
+            btnSubscribe.disabled = false;
+            const existing = await registration.pushManager.getSubscription();
+            if (existing) {
+              showSubscription(existing);
+              btnUnsubscribe.disabled = false;
+              btnCopy.disabled = false;
+            }
+          }
+        } catch (e) {
+          console.warn('getRegistration failed', e);
+        }
+      }
+    });
+
+    // ------------------------
+    // サーバーへ送信する例（コメント）
+    // ------------------------
+    // fetch('/sendPush', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ senderId:'me', recipientId:'you', message:'hi', encAuth: <base64 enc>, iv: <iv b64>, wrappedKey: <wrappedKey b64> }) });
+
+  </script>
+</body>
+</html>
 
